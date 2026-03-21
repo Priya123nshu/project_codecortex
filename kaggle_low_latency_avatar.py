@@ -1,0 +1,944 @@
+﻿from __future__ import annotations
+
+import base64
+import json
+import mimetypes
+from pathlib import Path
+
+
+HTML_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Low-Latency Avatar Demo</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #09131f;
+        --panel: rgba(10, 22, 36, 0.82);
+        --line: rgba(166, 199, 255, 0.16);
+        --text: #f4f8ff;
+        --muted: #9ab3d2;
+        --accent: #5de4c7;
+        --warm: #ffc56f;
+        --danger: #ff8b7d;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Space Grotesk", "Segoe UI", sans-serif;
+        color: var(--text);
+        background:
+          radial-gradient(circle at top left, rgba(93, 228, 199, 0.16), transparent 34%),
+          radial-gradient(circle at top right, rgba(255, 197, 111, 0.14), transparent 28%),
+          linear-gradient(180deg, #0d1827 0%, #09131f 52%, #060c14 100%);
+      }
+
+      .shell {
+        width: min(1180px, calc(100vw - 24px));
+        margin: 0 auto;
+        padding: 18px 0 26px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: minmax(320px, 1.05fr) minmax(320px, 0.95fr);
+        gap: 18px;
+      }
+
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        box-shadow: 0 28px 60px rgba(1, 6, 12, 0.4);
+        backdrop-filter: blur(18px);
+      }
+
+      .hero {
+        padding: 24px;
+      }
+
+      .controls {
+        padding: 22px;
+        display: grid;
+        gap: 16px;
+      }
+
+      .eyebrow {
+        margin: 0 0 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+        color: var(--accent);
+        font-size: 12px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(30px, 4vw, 54px);
+        line-height: 0.94;
+        max-width: 10ch;
+      }
+
+      .lede,
+      .copy {
+        margin: 14px 0 0;
+        color: var(--muted);
+        line-height: 1.62;
+      }
+
+      .stage {
+        position: relative;
+        margin-top: 22px;
+        padding: 16px;
+        overflow: hidden;
+        border-radius: 20px;
+        border: 1px solid rgba(166, 199, 255, 0.12);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01)),
+          radial-gradient(circle at center, rgba(93, 228, 199, 0.08), transparent 56%);
+      }
+
+      .stage::before,
+      .stage::after {
+        content: "";
+        position: absolute;
+        border-radius: 50%;
+        filter: blur(24px);
+      }
+
+      .stage::before {
+        left: -64px;
+        bottom: -84px;
+        width: 180px;
+        height: 180px;
+        background: rgba(93, 228, 199, 0.16);
+      }
+
+      .stage::after {
+        right: 12px;
+        top: 10px;
+        width: 110px;
+        height: 110px;
+        background: rgba(255, 197, 111, 0.14);
+      }
+
+      .badge-row,
+      .button-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 9px 14px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--muted);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+
+      .live {
+        color: var(--accent);
+      }
+
+      .warn {
+        color: var(--warm);
+      }
+
+      .error {
+        color: var(--danger);
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button,
+      .file-picker {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 12px 16px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.04);
+        color: var(--text);
+        cursor: pointer;
+        transition:
+          transform 160ms ease,
+          background 160ms ease,
+          border-color 160ms ease;
+      }
+
+      button:hover,
+      .file-picker:hover {
+        transform: translateY(-1px);
+        border-color: rgba(255, 255, 255, 0.24);
+      }
+
+      .primary {
+        background: linear-gradient(135deg, rgba(93, 228, 199, 0.2), rgba(255, 197, 111, 0.12));
+        border-color: rgba(93, 228, 199, 0.42);
+      }
+
+      .file-picker input {
+        display: none;
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .stat {
+        padding: 14px;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .stat-label {
+        margin: 0;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .stat-value {
+        margin: 8px 0 0;
+        font-size: 18px;
+      }
+
+      .meter {
+        height: 14px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+
+      .meter > div {
+        height: 100%;
+        width: 0%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #5de4c7 0%, #ffd47e 72%, #ff8b7d 100%);
+        transition: width 70ms linear;
+      }
+
+      .slider-grid {
+        display: grid;
+        gap: 12px;
+      }
+
+      .slider-row {
+        display: grid;
+        gap: 8px;
+      }
+
+      .slider-row label {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        color: var(--muted);
+      }
+
+      .slider-row input[type="range"] {
+        width: 100%;
+        accent-color: var(--accent);
+      }
+
+      .code {
+        margin: 0;
+        padding: 14px;
+        border-radius: 16px;
+        overflow-x: auto;
+        background: rgba(5, 11, 18, 0.86);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        color: #cde0ff;
+        line-height: 1.55;
+      }
+
+      .note {
+        padding: 12px 14px;
+        border-radius: 14px;
+        border: 1px solid rgba(255, 197, 111, 0.24);
+        background: rgba(255, 197, 111, 0.08);
+        color: #ffe3b0;
+        line-height: 1.55;
+      }
+
+      .error-box {
+        display: none;
+        padding: 12px 14px;
+        border-radius: 14px;
+        border: 1px solid rgba(255, 139, 125, 0.3);
+        background: rgba(255, 139, 125, 0.1);
+        color: #ffd3cd;
+      }
+
+      @keyframes blink {
+        0%,
+        44%,
+        46%,
+        100% {
+          transform: scaleY(1);
+          transform-origin: center;
+        }
+        45% {
+          transform: scaleY(0.12);
+          transform-origin: center;
+        }
+      }
+
+      @keyframes bob {
+        0%,
+        100% {
+          transform: translateY(0px);
+        }
+        50% {
+          transform: translateY(-5px);
+        }
+      }
+
+      @media (max-width: 980px) {
+        .shell {
+          width: min(100vw - 16px, 1180px);
+        }
+
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="grid">
+        <section class="panel hero">
+          <p class="eyebrow">Kaggle Realtime Avatar</p>
+          <h1>Low-latency lip-sync without MuSeTalk in the live loop.</h1>
+          <p class="lede">
+            This demo keeps the fast part in the browser: the mouth animation reacts directly to the same audio
+            the user hears. That removes the slow server-side video-generation step.
+          </p>
+
+          <div class="stage">
+            <svg id="avatar" viewBox="0 0 420 420" role="img" aria-label="Stylized avatar">
+              <defs>
+                <linearGradient id="avatar-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#0d2032"></stop>
+                  <stop offset="100%" stop-color="#152f4c"></stop>
+                </linearGradient>
+                <clipPath id="avatar-mask">
+                  <circle cx="210" cy="210" r="178"></circle>
+                </clipPath>
+              </defs>
+              <g style="animation: bob 4.8s ease-in-out infinite;">
+                <circle cx="210" cy="210" r="188" fill="url(#avatar-bg)"></circle>
+                <circle cx="148" cy="132" r="54" fill="rgba(93, 228, 199, 0.18)"></circle>
+                <circle cx="296" cy="118" r="38" fill="rgba(255, 197, 111, 0.15)"></circle>
+                <g clip-path="url(#avatar-mask)">
+                  <path d="M80 194c16-102 246-130 278 18l-6 112H94Z" fill="#101a31"></path>
+                  <ellipse cx="210" cy="236" rx="116" ry="132" fill="#f2cdb7"></ellipse>
+                  <ellipse cx="147" cy="244" rx="22" ry="14" fill="#f5ad9b" opacity="0.46"></ellipse>
+                  <ellipse cx="276" cy="244" rx="22" ry="14" fill="#f5ad9b" opacity="0.42"></ellipse>
+                  <g style="animation: blink 7s ease-in-out infinite;">
+                    <ellipse cx="162" cy="210" rx="24" ry="18" fill="white"></ellipse>
+                    <ellipse cx="257" cy="210" rx="24" ry="18" fill="white"></ellipse>
+                    <circle cx="166" cy="212" r="9" fill="#111c2e"></circle>
+                    <circle cx="261" cy="212" r="9" fill="#111c2e"></circle>
+                    <circle cx="170" cy="208" r="3.2" fill="white" opacity="0.9"></circle>
+                    <circle cx="265" cy="208" r="3.2" fill="white" opacity="0.9"></circle>
+                  </g>
+                  <path d="M133 178c12-18 40-26 63-16" stroke="#101a31" stroke-width="10" stroke-linecap="round" fill="none"></path>
+                  <path d="M228 162c26-13 54-7 66 11" stroke="#101a31" stroke-width="10" stroke-linecap="round" fill="none"></path>
+                  <path d="M177 286c20 16 46 16 66 0" stroke="rgba(118, 72, 92, 0.28)" stroke-width="7" stroke-linecap="round" fill="none"></path>
+                  <g id="mouth-shadow" transform="translate(210 302)">
+                    <ellipse cx="0" cy="0" rx="84" ry="26" fill="rgba(255,255,255,0.04)" opacity="0.2"></ellipse>
+                  </g>
+                  <g id="mouth-slot" transform="translate(210 302)"></g>
+                </g>
+                <circle cx="210" cy="210" r="188" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="2"></circle>
+              </g>
+            </svg>
+
+            <div class="badge-row" style="margin-top: 16px;">
+              <div id="speaking-badge" class="badge"><span class="dot"></span><span>Idle</span></div>
+              <div id="source-badge" class="badge"><span class="dot"></span><span>No source</span></div>
+              <div id="status-badge" class="badge"><span class="dot"></span><span>Ready</span></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel controls">
+          <div>
+            <h2 style="margin: 0 0 4px;">Run The Fast Path</h2>
+            <p class="copy">
+              Use an uploaded audio clip, an embedded sample, or the microphone. The lip-sync stays in the browser,
+              so there is no extra model hop just to animate the mouth.
+            </p>
+          </div>
+
+          <div class="button-row">
+            <button id="play-sample" class="primary">Play Embedded Sample</button>
+            <label class="file-picker">
+              Upload Audio
+              <input id="audio-upload" type="file" accept="audio/*" />
+            </label>
+            <button id="start-mic">Use Microphone</button>
+            <button id="stop-all">Stop</button>
+          </div>
+
+          <div class="note">
+            If Kaggle blocks microphone permissions inside the notebook output, download the generated HTML file and
+            open it in a regular browser tab. Uploaded audio will usually work inside the notebook.
+          </div>
+
+          <div id="error-box" class="error-box"></div>
+
+          <div class="stats">
+            <article class="stat">
+              <p class="stat-label">Mouth</p>
+              <p id="mouth-label" class="stat-value">closed</p>
+            </article>
+            <article class="stat">
+              <p class="stat-label">Energy</p>
+              <p id="energy-label" class="stat-value">0%</p>
+            </article>
+            <article class="stat">
+              <p class="stat-label">Source</p>
+              <p id="source-label" class="stat-value">idle</p>
+            </article>
+          </div>
+
+          <div>
+            <h2 style="margin: 0 0 8px;">Live Meter</h2>
+            <div class="meter"><div id="meter-fill"></div></div>
+          </div>
+
+          <div class="slider-grid">
+            <div>
+              <h2 style="margin: 0 0 4px;">Latency Tuning</h2>
+              <p class="copy">Small analysis windows and short smoothing constants keep the avatar responsive.</p>
+            </div>
+
+            <div class="slider-row">
+              <label for="fft-size"><span>FFT Size</span><span id="fft-size-value">1024</span></label>
+              <select id="fft-size">
+                <option value="512">512</option>
+                <option value="1024" selected>1024</option>
+              </select>
+            </div>
+
+            <div class="slider-row">
+              <label for="silence-threshold"><span>Silence Threshold</span><span id="silence-threshold-value">0.080</span></label>
+              <input id="silence-threshold" type="range" min="0.03" max="0.2" step="0.005" value="0.08" />
+            </div>
+
+            <div class="slider-row">
+              <label for="attack-ms"><span>Attack (ms)</span><span id="attack-ms-value">30</span></label>
+              <input id="attack-ms" type="range" min="10" max="90" step="5" value="30" />
+            </div>
+
+            <div class="slider-row">
+              <label for="release-ms"><span>Release (ms)</span><span id="release-ms-value">110</span></label>
+              <input id="release-ms" type="range" min="60" max="220" step="5" value="110" />
+            </div>
+
+            <div class="slider-row">
+              <label for="hold-ms"><span>Mouth Hold (ms)</span><span id="hold-ms-value">50</span></label>
+              <input id="hold-ms" type="range" min="30" max="90" step="5" value="50" />
+            </div>
+
+            <div class="slider-row">
+              <label for="close-delay-ms"><span>Close Delay (ms)</span><span id="close-delay-ms-value">100</span></label>
+              <input id="close-delay-ms" type="range" min="60" max="160" step="5" value="100" />
+            </div>
+          </div>
+
+          <div>
+            <h2 style="margin: 0 0 8px;">Realtime Integration Hook</h2>
+            <pre class="code">const remoteStream = new MediaStream([remoteAudioTrack]);
+await window.startLipSyncFromRemoteStream(remoteStream);</pre>
+          </div>
+
+          <audio id="shared-audio" preload="auto"></audio>
+        </section>
+      </div>
+    </div>
+
+    <script>
+      const embeddedSample = __SAMPLE_AUDIO_DATA_URL__;
+      const sharedAudio = document.getElementById("shared-audio");
+      const playSampleButton = document.getElementById("play-sample");
+      const uploadInput = document.getElementById("audio-upload");
+      const startMicButton = document.getElementById("start-mic");
+      const stopAllButton = document.getElementById("stop-all");
+      const meterFill = document.getElementById("meter-fill");
+      const mouthLabel = document.getElementById("mouth-label");
+      const energyLabel = document.getElementById("energy-label");
+      const sourceLabel = document.getElementById("source-label");
+      const errorBox = document.getElementById("error-box");
+      const speakingBadge = document.getElementById("speaking-badge");
+      const sourceBadge = document.getElementById("source-badge");
+      const statusBadge = document.getElementById("status-badge");
+      const mouthSlot = document.getElementById("mouth-slot");
+      const mouthShadow = document.getElementById("mouth-shadow");
+
+      const config = {
+        fftSize: 1024,
+        silenceThreshold: 0.08,
+        attackMs: 30,
+        releaseMs: 110,
+        holdMs: 50,
+        closeDelayMs: 100
+      };
+
+      const uiBindings = [
+        ["fft-size", "fft-size-value", Number],
+        ["silence-threshold", "silence-threshold-value", (value) => Number(value)],
+        ["attack-ms", "attack-ms-value", Number],
+        ["release-ms", "release-ms-value", Number],
+        ["hold-ms", "hold-ms-value", Number],
+        ["close-delay-ms", "close-delay-ms-value", Number]
+      ];
+
+      class BrowserLipSyncEngine {
+        constructor(onFrame) {
+          this.onFrame = onFrame;
+          this.ctx = null;
+          this.analyser = null;
+          this.currentSourceNode = null;
+          this.outputNode = null;
+          this.rafId = null;
+          this.timeDomain = null;
+          this.frequencyDomain = null;
+          this.lastTick = 0;
+          this.smoothedEnergy = 0;
+          this.currentMouth = "closed";
+          this.mouthChangedAt = 0;
+          this.silenceSince = 0;
+          this.elementSources = new WeakMap();
+        }
+
+        async ensureContext() {
+          if (!this.ctx) {
+            this.ctx = new AudioContext({ latencyHint: "interactive" });
+          }
+          if (this.ctx.state === "suspended") {
+            await this.ctx.resume();
+          }
+        }
+
+        async startWithElement(element) {
+          await this.ensureContext();
+          this.stopGraph();
+          let source = this.elementSources.get(element);
+          if (!source) {
+            source = this.ctx.createMediaElementSource(element);
+            this.elementSources.set(element, source);
+          }
+
+          this.currentSourceNode = source;
+          this.outputNode = this.ctx.createGain();
+          this.outputNode.gain.value = 1;
+          this.analyser = this.ctx.createAnalyser();
+          this.applyConfig();
+
+          source.connect(this.outputNode);
+          this.outputNode.connect(this.analyser);
+          this.outputNode.connect(this.ctx.destination);
+          this.resetFrameState();
+          this.tick();
+        }
+
+        async startWithStream(stream) {
+          await this.ensureContext();
+          this.stopGraph();
+          const source = this.ctx.createMediaStreamSource(stream);
+          this.currentSourceNode = source;
+          this.analyser = this.ctx.createAnalyser();
+          this.applyConfig();
+          source.connect(this.analyser);
+          this.resetFrameState();
+          this.tick();
+        }
+
+        applyConfig() {
+          if (!this.analyser) {
+            return;
+          }
+          this.analyser.fftSize = config.fftSize;
+          this.analyser.smoothingTimeConstant = 0.04;
+          this.timeDomain = new Uint8Array(this.analyser.fftSize);
+          this.frequencyDomain = new Uint8Array(this.analyser.frequencyBinCount);
+        }
+
+        resetFrameState() {
+          this.lastTick = performance.now();
+          this.smoothedEnergy = 0;
+          this.currentMouth = "closed";
+          this.mouthChangedAt = this.lastTick;
+          this.silenceSince = this.lastTick;
+        }
+
+        stopGraph() {
+          if (this.rafId) {
+            cancelAnimationFrame(this.rafId);
+            this.rafId = null;
+          }
+          if (this.currentSourceNode) {
+            this.currentSourceNode.disconnect();
+            this.currentSourceNode = null;
+          }
+          if (this.outputNode) {
+            this.outputNode.disconnect();
+            this.outputNode = null;
+          }
+          if (this.analyser) {
+            this.analyser.disconnect();
+            this.analyser = null;
+          }
+          this.onFrame({ mouth: "closed", energy: 0, speaking: false });
+        }
+
+        tick = () => {
+          if (!this.analyser || !this.timeDomain || !this.frequencyDomain) {
+            return;
+          }
+
+          const now = performance.now();
+          const deltaMs = Math.max(now - this.lastTick, 16);
+          this.lastTick = now;
+
+          this.analyser.getByteTimeDomainData(this.timeDomain);
+          this.analyser.getByteFrequencyData(this.frequencyDomain);
+
+          const rawEnergy = Math.min(1, computeRms(this.timeDomain) * 4.8);
+          this.smoothedEnergy = smoothEnergy(
+            this.smoothedEnergy,
+            rawEnergy,
+            deltaMs,
+            config.attackMs,
+            config.releaseMs
+          );
+
+          const roundness = computeRoundness(
+            this.frequencyDomain,
+            this.ctx ? this.ctx.sampleRate : 48000,
+            this.analyser.fftSize
+          );
+
+          const aboveThreshold = this.smoothedEnergy >= config.silenceThreshold;
+          if (aboveThreshold) {
+            this.silenceSince = 0;
+          } else if (!this.silenceSince) {
+            this.silenceSince = now;
+          }
+
+          const speaking =
+            aboveThreshold || (this.silenceSince !== 0 && now - this.silenceSince < config.closeDelayMs);
+
+          const nextMouth = speaking
+            ? chooseMouth(this.smoothedEnergy, roundness, config.silenceThreshold)
+            : "closed";
+
+          if (
+            nextMouth !== this.currentMouth &&
+            (nextMouth === "closed" || now - this.mouthChangedAt >= config.holdMs)
+          ) {
+            this.currentMouth = nextMouth;
+            this.mouthChangedAt = now;
+          }
+
+          this.onFrame({
+            mouth: speaking ? this.currentMouth : "closed",
+            energy: this.smoothedEnergy,
+            speaking
+          });
+
+          this.rafId = requestAnimationFrame(this.tick);
+        };
+      }
+
+      const engine = new BrowserLipSyncEngine(renderFrame);
+      const runtime = {
+        micStream: null,
+        source: "idle"
+      };
+
+      if (!embeddedSample) {
+        playSampleButton.disabled = true;
+        playSampleButton.textContent = "No Embedded Sample";
+      }
+
+      uiBindings.forEach(([inputId, valueId, caster]) => {
+        const input = document.getElementById(inputId);
+        const value = document.getElementById(valueId);
+        input.addEventListener("input", () => {
+          config[toConfigKey(inputId)] = caster(input.value);
+          value.textContent = inputId === "silence-threshold" ? Number(input.value).toFixed(3) : input.value;
+          engine.applyConfig();
+        });
+      });
+
+      playSampleButton.addEventListener("click", async () => {
+        clearError();
+        if (!embeddedSample) {
+          showError("No embedded sample was provided by the notebook.");
+          return;
+        }
+
+        try {
+          await stopAll();
+          runtime.source = "embedded-sample";
+          sharedAudio.srcObject = null;
+          sharedAudio.src = embeddedSample;
+          sharedAudio.currentTime = 0;
+          await engine.startWithElement(sharedAudio);
+          await sharedAudio.play();
+          updateSourceUi();
+        } catch (error) {
+          showError(error.message || "Could not start the embedded sample.");
+        }
+      });
+
+      uploadInput.addEventListener("change", async (event) => {
+        clearError();
+        const file = event.target.files && event.target.files[0];
+        if (!file) {
+          return;
+        }
+
+        try {
+          await stopAll();
+          runtime.source = "uploaded-audio";
+          sharedAudio.srcObject = null;
+          sharedAudio.src = URL.createObjectURL(file);
+          sharedAudio.currentTime = 0;
+          await engine.startWithElement(sharedAudio);
+          await sharedAudio.play();
+          updateSourceUi();
+        } catch (error) {
+          showError(error.message || "Could not play the uploaded audio.");
+        }
+      });
+
+      startMicButton.addEventListener("click", async () => {
+        clearError();
+        try {
+          await stopAll();
+          runtime.source = "microphone";
+          runtime.micStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              channelCount: 1,
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false
+            }
+          });
+          await engine.startWithStream(runtime.micStream);
+          updateSourceUi();
+        } catch (error) {
+          showError(error.message || "Could not access the microphone.");
+        }
+      });
+
+      stopAllButton.addEventListener("click", async () => {
+        await stopAll();
+      });
+
+      sharedAudio.addEventListener("ended", async () => {
+        await stopAll();
+      });
+
+      async function stopAll() {
+        sharedAudio.pause();
+        sharedAudio.currentTime = 0;
+        if (sharedAudio.src && runtime.source === "uploaded-audio") {
+          URL.revokeObjectURL(sharedAudio.src);
+        }
+        if (runtime.micStream) {
+          runtime.micStream.getTracks().forEach((track) => track.stop());
+          runtime.micStream = null;
+        }
+        engine.stopGraph();
+        runtime.source = "idle";
+        updateSourceUi();
+      }
+
+      function renderFrame(frame) {
+        const energyPercent = Math.min(100, Math.round(frame.energy * 100));
+        meterFill.style.width = `${energyPercent}%`;
+        energyLabel.textContent = `${energyPercent}%`;
+        mouthLabel.textContent = frame.mouth;
+        speakingBadge.className = `badge ${frame.speaking ? "live" : ""}`;
+        speakingBadge.querySelector("span:last-child").textContent = frame.speaking ? "Speaking" : "Idle";
+        statusBadge.className = `badge ${runtime.source === "idle" ? "" : "live"}`;
+        statusBadge.querySelector("span:last-child").textContent = runtime.source === "idle" ? "Ready" : "Running";
+        mouthShadow.firstElementChild.setAttribute("cy", frame.speaking ? "3" : "0");
+        mouthShadow.firstElementChild.setAttribute("opacity", frame.speaking ? "0.4" : "0.2");
+        mouthSlot.innerHTML = mouthSvg(frame.mouth);
+      }
+
+      function updateSourceUi() {
+        sourceLabel.textContent = runtime.source;
+        const label =
+          runtime.source === "idle"
+            ? "No source"
+            : runtime.source === "microphone"
+              ? "Microphone stream"
+              : runtime.source === "uploaded-audio"
+                ? "Uploaded file"
+                : runtime.source === "remote-stream"
+                  ? "Remote stream"
+                  : "Embedded sample";
+
+        sourceBadge.className = `badge ${runtime.source === "microphone" ? "warn" : runtime.source === "idle" ? "" : "live"}`;
+        sourceBadge.querySelector("span:last-child").textContent = label;
+        if (runtime.source === "idle") {
+          renderFrame({ mouth: "closed", energy: 0, speaking: false });
+        }
+      }
+
+      function showError(message) {
+        errorBox.style.display = "block";
+        errorBox.textContent = message;
+        statusBadge.className = "badge error";
+        statusBadge.querySelector("span:last-child").textContent = "Needs attention";
+      }
+
+      function clearError() {
+        errorBox.style.display = "none";
+        errorBox.textContent = "";
+      }
+
+      function mouthSvg(mouth) {
+        switch (mouth) {
+          case "small":
+            return '<ellipse cx="0" cy="0" rx="16" ry="10" fill="#59263b"></ellipse>';
+          case "medium":
+            return '<ellipse cx="0" cy="4" rx="20" ry="18" fill="#59263b"></ellipse>';
+          case "wide":
+            return '<ellipse cx="0" cy="8" rx="28" ry="30" fill="#59263b"></ellipse><ellipse cx="0" cy="-3" rx="18" ry="7" fill="rgba(255, 212, 126, 0.24)"></ellipse>';
+          case "round":
+            return '<ellipse cx="0" cy="8" rx="18" ry="26" fill="#59263b"></ellipse><ellipse cx="0" cy="8" rx="7" ry="13" fill="rgba(18, 11, 19, 0.16)"></ellipse>';
+          default:
+            return '<path d="M-28 2c18 10 38 10 56 0" stroke="#59263b" stroke-width="8" stroke-linecap="round" fill="none"></path>';
+        }
+      }
+
+      function computeRms(values) {
+        let sum = 0;
+        for (let index = 0; index < values.length; index += 1) {
+          const normalized = (values[index] - 128) / 128;
+          sum += normalized * normalized;
+        }
+        return Math.sqrt(sum / values.length);
+      }
+
+      function smoothEnergy(current, next, deltaMs, attackMs, releaseMs) {
+        const timeConstant = next > current ? Math.max(attackMs, 1) : Math.max(releaseMs, 1);
+        const alpha = 1 - Math.exp(-deltaMs / timeConstant);
+        return current + (next - current) * alpha;
+      }
+
+      function computeRoundness(values, sampleRate, fftSize) {
+        const binWidth = sampleRate / fftSize;
+        const low = averageRange(values, binWidth, 250, 900);
+        const mid = averageRange(values, binWidth, 1200, 2600);
+        return low / Math.max(mid, 0.001);
+      }
+
+      function averageRange(values, binWidth, minHz, maxHz) {
+        const start = Math.max(0, Math.floor(minHz / binWidth));
+        const end = Math.min(values.length - 1, Math.ceil(maxHz / binWidth));
+        let sum = 0;
+        let count = 0;
+
+        for (let index = start; index <= end; index += 1) {
+          sum += values[index] / 255;
+          count += 1;
+        }
+
+        return count ? sum / count : 0;
+      }
+
+      function chooseMouth(energy, roundness, silenceThreshold) {
+        if (energy < silenceThreshold) {
+          return "closed";
+        }
+        if (energy > silenceThreshold + 0.05 && roundness > 1.22) {
+          return "round";
+        }
+        if (energy < silenceThreshold + 0.05) {
+          return "small";
+        }
+        if (energy < silenceThreshold + 0.17) {
+          return "medium";
+        }
+        return "wide";
+      }
+
+      function toConfigKey(inputId) {
+        return {
+          "fft-size": "fftSize",
+          "silence-threshold": "silenceThreshold",
+          "attack-ms": "attackMs",
+          "release-ms": "releaseMs",
+          "hold-ms": "holdMs",
+          "close-delay-ms": "closeDelayMs"
+        }[inputId];
+      }
+
+      window.startLipSyncFromRemoteStream = async function startLipSyncFromRemoteStream(stream) {
+        clearError();
+        await stopAll();
+        runtime.source = "remote-stream";
+        await engine.startWithStream(stream);
+        updateSourceUi();
+      };
+
+      updateSourceUi();
+      renderFrame({ mouth: "closed", energy: 0, speaking: false });
+    </script>
+  </body>
+</html>
+"""
+
+
+def audio_path_to_data_url(path: str | Path) -> str:
+    source = Path(path).expanduser().resolve()
+    if not source.exists():
+        raise FileNotFoundError(f"Audio file not found: {source}")
+
+    mime_type, _ = mimetypes.guess_type(source.name)
+    if mime_type is None:
+        mime_type = "audio/mpeg"
+
+    encoded = base64.b64encode(source.read_bytes()).decode("ascii")
+    return f"data:{mime_type};base64,{encoded}"
+
+
+def build_demo_html(sample_audio_data_url: str | None = None) -> str:
+    return HTML_TEMPLATE.replace("__SAMPLE_AUDIO_DATA_URL__", json.dumps(sample_audio_data_url))

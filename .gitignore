@@ -1,0 +1,14 @@
+node_modules/
+.next/
+.env.local
+.env
+.venv/
+.conda-musetalk/
+__pycache__/
+*.pyc
+avatar_service/.hf-cache/
+avatar_service/storage/
+*.mp4
+*.mp3
+*.jpg
+*.png

@@ -1,0 +1,29 @@
+# Base API/runtime
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.27,<1.0
+pydantic>=1.10,<3.0
+python-multipart>=0.0.9,<1.0
+
+# MuseTalk runtime dependencies
+numpy==1.23.5
+opencv-python==4.9.0.80
+torch==2.0.1
+torchvision==0.15.2
+torchaudio==2.0.2
+tqdm>=4.66,<5.0
+transformers==4.39.2
+json-tricks>=3.17,<4.0
+tomli>=2.0,<3.0
+huggingface_hub==0.30.2
+requests>=2.31,<3.0
+gdown>=5.2,<6.0
+cython>=3.0,<4.0
+xtcocotools>=1.14,<2.0
+munkres>=1.1,<2.0
+openmim>=0.3.9,<1.0
+
+# Install these with mim after the base requirements:
+# mim install mmengine
+# mim install "mmcv==2.0.1"
+# mim install "mmdet==3.1.0"
+# pip install --no-deps "mmpose==1.1.0"

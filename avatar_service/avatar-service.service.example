@@ -1,0 +1,15 @@
+[Unit]
+Description=Avatar Service API
+After=network.target
+
+[Service]
+Type=simple
+User=ssm-user
+WorkingDirectory=/home/ssm-user/spillr-avatar
+Environment=PYTHONPATH=/home/ssm-user/spillr-avatar
+ExecStart=/home/ssm-user/spillr-avatar/avatar_service/start_api.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

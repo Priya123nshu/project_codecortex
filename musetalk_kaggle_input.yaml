@@ -1,0 +1,14 @@
+# MuseTalk Kaggle inference config
+# Replace the two paths below with files from your Kaggle dataset.
+#
+# Example:
+# /kaggle/input/my-musetalk-data/input_video.mp4
+# /kaggle/input/my-musetalk-data/input_audio.wav
+#
+# For MuseTalk v1.5, bbox_shift is not used.
+# For MuseTalk v1.0, you can add: bbox_shift: -7
+
+task_0:
+  video_path: "/kaggle/input/your-dataset-name/input_video.mp4"
+  audio_path: "/kaggle/input/your-dataset-name/input_audio.wav"
+  result_name: "musetalk_output.mp4"
