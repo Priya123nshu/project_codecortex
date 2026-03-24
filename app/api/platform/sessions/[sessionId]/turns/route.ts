@@ -1,9 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/auth";
-import { issuePlatformAccessToken, roleForEmail } from "@/lib/platform-access-token";
+import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 300;
 
 function platformBaseUrl(): string {
   const baseUrl = process.env.NEXT_PUBLIC_PLATFORM_API_BASE_URL?.trim();
@@ -13,31 +12,19 @@ function platformBaseUrl(): string {
   return baseUrl.replace(/\/$/, "");
 }
 
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ sessionId: string }> }
-) {
+export async function POST(request: Request, { params }: { params: Promise<{ sessionId: string }> }) {
   try {
-    const session = await auth();
-
-    if (!session?.user?.email) {
-      return NextResponse.json({ detail: "Not authenticated." }, { status: 401 });
+    const authorization = request.headers.get("authorization");
+    if (!authorization) {
+      return NextResponse.json({ detail: "Missing Authorization header." }, { status: 401 });
     }
 
     const { sessionId } = await params;
-    const accessToken = await issuePlatformAccessToken({
-      subject: session.user.email,
-      email: session.user.email,
-      name: session.user.name ?? session.user.email,
-      role: roleForEmail(session.user.email),
-      orgId: process.env.PLATFORM_DEFAULT_ORG_ID ?? "pilot-org",
-    });
-
     const formData = await request.formData();
     const upstreamResponse = await fetch(`${platformBaseUrl()}/sessions/${sessionId}/turns`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${accessToken}`,
+        Authorization: authorization,
         "ngrok-skip-browser-warning": "1",
       },
       body: formData,

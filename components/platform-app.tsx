@@ -572,6 +572,9 @@ export default function PlatformApp({ userName, userEmail, isAdmin }: Props) {
     }
 
     try {
+      if (!tokenState) {
+        throw new Error("Platform API access token is missing.");
+      }
       setIsSubmittingTurn(true);
       setPendingTurnBlob(null);
       setConversationError(null);
@@ -590,6 +593,9 @@ export default function PlatformApp({ userName, userEmail, isAdmin }: Props) {
 
       const response = await fetch(`/api/platform/sessions/${activeSession.session_id}/turns`, {
         method: "POST",
+        headers: {
+          Authorization: `Bearer ${tokenState.access_token}`,
+        },
         body: formData,
         cache: "no-store",
       });
