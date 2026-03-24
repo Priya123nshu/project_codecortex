@@ -13,7 +13,7 @@ const googleEnabled = Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE
 const microsoftEnabled = Boolean(
   process.env.MICROSOFT_CLIENT_ID && process.env.MICROSOFT_CLIENT_SECRET && process.env.MICROSOFT_TENANT_ID
 );
-const devCredentialsEnabled = process.env.NODE_ENV !== "production";
+const devCredentialsEnabled = process.env.NODE_ENV !== "production" || (!googleEnabled && !microsoftEnabled);
 
 export const platformAuthProviders: AuthProviderDescriptor[] = [
   { id: "google", label: "Google", enabled: googleEnabled },
