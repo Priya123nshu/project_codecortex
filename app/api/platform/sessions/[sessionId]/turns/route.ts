@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 
+import { auth } from "@/auth";
+import { issuePlatformAccessToken, roleForEmail } from "@/lib/platform-access-token";
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -14,9 +17,20 @@ function platformBaseUrl(): string {
 
 export async function POST(request: Request, { params }: { params: Promise<{ sessionId: string }> }) {
   try {
-    const authorization = request.headers.get("authorization");
+    let authorization = request.headers.get("authorization");
     if (!authorization) {
-      return NextResponse.json({ detail: "Missing Authorization header." }, { status: 401 });
+      const session = await auth();
+      if (!session?.user?.email) {
+        return NextResponse.json({ detail: "Not authenticated." }, { status: 401 });
+      }
+      const accessToken = await issuePlatformAccessToken({
+        subject: session.user.email,
+        email: session.user.email,
+        name: session.user.name ?? session.user.email,
+        role: roleForEmail(session.user.email),
+        orgId: process.env.PLATFORM_DEFAULT_ORG_ID ?? "pilot-org",
+      });
+      authorization = `Bearer ${accessToken}`;
     }
 
     const { sessionId } = await params;
