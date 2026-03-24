@@ -12,3 +12,10 @@ avatar_service/storage/
 *.mp3
 *.jpg
 *.png
+platform_service/storage/
+tsconfig.tsbuildinfo
+avatar_service/work/
+tts_service/storage/
+tts_service/models/
+tts_service/runtime/
+tmp_apply_patch_test.txt

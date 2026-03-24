@@ -1,44 +1,78 @@
-﻿# Vercel Frontend for the EC2 Avatar Service
+﻿# Vercel Deployment for Platform V1
 
-This Next.js app is a simple public frontend for your EC2-hosted `avatar_service`.
-The browser talks only to `/api/avatar/*` routes on the frontend. Those routes proxy requests to your EC2 FastAPI backend.
+This repo now deploys the **web app only** on Vercel. The long-running orchestration and media services stay off Vercel:
 
-## 1. Keep the EC2 backend running
-On EC2, make sure your avatar API is running on port `8000`.
+- Web app: Next.js on Vercel
+- Platform API: FastAPI on AWS CPU infrastructure
+- TTS service: FastAPI sidecar on CPU infrastructure
+- Avatar render service: existing `avatar_service` on AWS GPU infrastructure
+
+The browser signs in through Auth.js, fetches a short-lived platform token from `/api/platform-token`, and then calls the platform API directly.
+
+## 1. Keep all backend services running
+
+You need three reachable services before the Vercel app can work:
+
+- `avatar_service` on port `8000`
+- `tts_service` on port `8200`
+- `platform_service` on port `8100`
 
 Example:
 
 ```bash
-cd /home/ssm-user/spillr-avatar
-export PYTHONPATH=/home/ssm-user/spillr-avatar
-/home/ssm-user/spillr-avatar/.venv-avatar/bin/python -m uvicorn avatar_service.api:app --host 0.0.0.0 --port 8000
+uvicorn avatar_service.api:app --host 0.0.0.0 --port 8000
+uvicorn tts_service.api:app --host 0.0.0.0 --port 8200
+uvicorn platform_service.api:app --host 0.0.0.0 --port 8100
 ```
 
-## 2. Sync the latest avatar_service changes to EC2
-This frontend now expects these backend routes/features to exist on EC2:
-- `GET /avatars`
-- `POST /avatars/preprocess-upload`
-- `POST /jobs/render-upload`
-- `GET /jobs/{job_id}`
-- static outputs served from `/outputs/*`
-- URL fields like `chunk_video_urls` in the JSON response
+## 2. Configure the platform service
 
-So before testing the new multi-avatar UI, re-sync your updated `avatar_service/` folder to the EC2 machine and restart the API process.
+Make sure `platform_service/.env` points to the avatar render service and the TTS sidecar, and allows the Vercel frontend origin in CORS.
 
-## 3. What multi-avatar means in this version
-- Preprocess each avatar one time on EC2.
-- Each avatar gets its own `avatar_id` and cached `avatar_data.pkl`.
-- The frontend loads the ready avatar library.
-- Each render job picks one selected avatar from that library.
-
-This is the right model for keeping Sydney Sweeney plus two or three more avatars ready at once.
-
-## 4. Local test
-Create `.env.local` in the frontend root:
+At minimum:
 
 ```env
-AVATAR_API_BASE_URL=http://<EC2_PUBLIC_IP>:8000
-NEXT_PUBLIC_DEFAULT_AVATAR_ID=sydneey
+PLATFORM_PUBLIC_BASE_URL=http://<CPU_API_HOST>:8100
+PLATFORM_CORS_ALLOW_ORIGINS=http://localhost:3000,https://<your-vercel-domain>
+PLATFORM_JWT_SECRET=<shared-secret>
+PLATFORM_ADMIN_EMAILS=you@example.com
+AVATAR_RENDER_SERVICE_BASE_URL=http://<GPU_HOST>:8000
+AVATAR_RENDER_PUBLIC_BASE_URL=http://<GPU_HOST>:8000
+TTS_SERVICE_BASE_URL=http://<CPU_HOST>:8200
+PLATFORM_AVATAR_CHUNK_DURATION_SECONDS=2
+```
+
+`PLATFORM_JWT_SECRET` must match the secret used in the Next.js app for platform token minting.
+
+For Azure OpenAI-backed multilingual routing, also configure:
+
+```env
+AZURE_OPENAI_ENDPOINT=
+AZURE_OPENAI_API_KEY=
+AZURE_OPENAI_CHAT_DEPLOYMENT=
+AZURE_OPENAI_EMBEDDINGS_DEPLOYMENT=
+```
+
+## 3. Local frontend test
+
+Create `.env.local` in the repo root:
+
+```env
+NEXT_PUBLIC_PLATFORM_API_BASE_URL=http://127.0.0.1:8100
+NEXTAUTH_URL=http://localhost:3000
+NEXTAUTH_SECRET=<shared-secret>
+PLATFORM_API_JWT_SECRET=<shared-secret>
+PLATFORM_ADMIN_EMAILS=you@example.com
+```
+
+Optional login providers:
+
+```env
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+MICROSOFT_CLIENT_ID=
+MICROSOFT_CLIENT_SECRET=
+MICROSOFT_TENANT_ID=
 ```
 
 Then run:
@@ -48,60 +82,70 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+## 4. Vercel environment variables
 
-## 5. Deploy on Vercel
-In Vercel project settings, add these environment variables:
+In the Vercel project settings, add:
 
 ```env
-AVATAR_API_BASE_URL=http://<EC2_PUBLIC_IP>:8000
-NEXT_PUBLIC_DEFAULT_AVATAR_ID=sydneey
+NEXT_PUBLIC_PLATFORM_API_BASE_URL=https://api.<your-domain>
+NEXTAUTH_SECRET=<shared-secret>
+PLATFORM_API_JWT_SECRET=<shared-secret>
+PLATFORM_ADMIN_EMAILS=you@example.com
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+MICROSOFT_CLIENT_ID=
+MICROSOFT_CLIENT_SECRET=
+MICROSOFT_TENANT_ID=
 ```
 
-Then deploy the project normally.
+If you are using a custom domain, also set:
 
-## 6. Security group requirement
-For Vercel to reach EC2, port `8000` cannot stay locked to only your IP address.
-For a quick demo, allow inbound TCP `8000` from `0.0.0.0/0` temporarily.
+```env
+NEXTAUTH_URL=https://app.<your-domain>
+```
 
-Safer next step after testing:
-- put Nginx in front
-- move traffic to `80/443`
-- add TLS and auth
+## 5. Network rules
 
-## 7. Important limits for this simple demo
-As of March 21, 2026, Vercel's official Functions limits page lists:
-- a `4.5 MB` maximum payload for request or response bodies
-- Hobby max duration configurable up to `300s`
+Vercel must be able to reach the **platform API**, and the platform API must be able to reach both the **TTS sidecar** and the **GPU avatar service**.
 
-This project keeps the upload proxy routes on the Node.js runtime and sets `maxDuration = 300` where needed.
+That means:
 
-Because your current backend preprocess/render endpoints are synchronous, this frontend is best for short demo uploads.
-For larger avatar videos or longer audio, move to one of these:
-- upload directly to EC2
-- upload to S3 and send only metadata through the frontend
-- change the backend to async jobs/queues
+- Vercel -> platform service must be allowed
+- platform service -> TTS service must be allowed
+- platform service -> avatar render service must be allowed
+- you do not need to expose the GPU avatar service publicly if the platform API can reach it privately
 
-## 8. Routes created in this frontend
-- `GET /api/avatar/health`
-- `GET /api/avatar/avatars`
-- `POST /api/avatar/preprocess-upload`
-- `POST /api/avatar/render-upload`
-- `GET /api/avatar/jobs/:jobId`
-- `GET /api/avatar/output/*`
+## 6. Current production model
 
-These proxy routes rewrite returned chunk URLs so the browser can play videos from the same frontend domain.
+For this pilot, Vercel is best used for:
 
-## 9. What the page does now
-- uploads new avatar videos for one-time preprocessing
-- loads the ready avatar library
-- lets you select any ready avatar
-- uploads one audio file
-- starts a render job for the selected avatar
-- polls job status
-- shows returned chunk videos inline
+- sign-in
+- admin console
+- avatar selection
+- input and output language selection
+- push-to-talk UI with transcript confirmation
+- session history and streamed chunk playback
+
+The heavy work stays off Vercel:
+
+- avatar preprocessing
+- document indexing
+- Azure OpenAI orchestration
+- multilingual TTS synthesis
+- MuseTalk rendering
+
+## 7. Current scope
+
+This implementation is intentionally:
+
+- multilingual for English, Hindi, Punjabi, and Tamil
+- single organization
+- one avatar and one language route per session
+- admin-curated avatar library
+- push-to-talk, not continuous duplex audio
 
 ## Official references
-- [Vercel Functions](https://vercel.com/docs/functions/)
-- [Vercel Functions limits](https://vercel.com/docs/functions/limitations)
-- [Configuring maximum duration for Vercel Functions](https://vercel.com/docs/functions/configuring-functions/duration)
+
+- [Vercel Environment Variables](https://vercel.com/docs/environment-variables)
+- [Vercel Project Settings](https://vercel.com/docs/project-configuration/project-settings)
+- [Deploying Git repositories on Vercel](https://vercel.com/docs/git)

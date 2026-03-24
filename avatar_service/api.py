@@ -3,6 +3,8 @@
 import json
 import re
 import shutil
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -12,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from avatar_service.config import ConfigurationError, get_settings, validate_environment
-from avatar_service.pipeline.jobs import load_job_status
+from avatar_service.pipeline.jobs import initialize_job, load_job_status
 from avatar_service.pipeline.preprocess import preprocess_avatar
 from avatar_service.pipeline.render import render_job
 from avatar_service.schemas import (
@@ -146,6 +148,24 @@ def _build_render_response(result) -> RenderAudioResponse:
     )
 
 
+def _build_render_response_from_status(status: JobStatusResponse) -> RenderAudioResponse:
+    return RenderAudioResponse(
+        job_id=status.job_id,
+        status=status.status,
+        output_dir=status.output_dir,
+        stream_info_path=status.stream_info_path,
+        chunks_total=status.chunks_total,
+        chunks_completed=status.chunks_completed,
+        chunk_video_paths=list(status.chunk_video_paths),
+        chunk_video_urls=[
+            url for url in (_output_path_to_url(path) for path in status.chunk_video_paths) if url
+        ],
+        stream_info_url=_output_path_to_url(status.stream_info_path),
+        output_url_prefix=_output_dir_to_url_prefix(status.output_dir),
+        error=status.error,
+    )
+
+
 def _build_job_status_response(status: JobStatusResponse) -> JobStatusResponse:
     payload = model_to_dict(status)
     payload["chunk_video_urls"] = [
@@ -154,6 +174,13 @@ def _build_job_status_response(status: JobStatusResponse) -> JobStatusResponse:
     payload["stream_info_url"] = _output_path_to_url(status.stream_info_path)
     payload["output_url_prefix"] = _output_dir_to_url_prefix(status.output_dir)
     return JobStatusResponse(**payload)
+
+
+def _run_render_job_async(**kwargs) -> None:
+    try:
+        render_job(**kwargs)
+    except Exception:
+        return
 
 
 @app.get("/")
@@ -284,9 +311,74 @@ def render_audio_upload_endpoint(
         audio_file.file.close()
 
 
+@app.post("/jobs/render-async", response_model=RenderAudioResponse)
+def render_audio_async_endpoint(
+    avatar_id: str = Form(...),
+    audio_file: UploadFile = File(...),
+    job_id: Optional[str] = Form(default=None),
+    fps: Optional[int] = Form(default=None),
+    batch_size: Optional[int] = Form(default=None),
+    model_version: Optional[str] = Form(default="v15"),
+    chunk_duration: int = Form(default=3),
+) -> RenderAudioResponse:
+    resolved_job_id = job_id or uuid.uuid4().hex
+    normalized_avatar_id = _validate_avatar_id(avatar_id)
+    upload_dir = settings.jobs_root / resolved_job_id / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = Path(audio_file.filename or "audio-upload.bin").name
+    upload_path = upload_dir / filename
+
+    try:
+        with upload_path.open("wb") as handle:
+            shutil.copyfileobj(audio_file.file, handle)
+
+        initialize_job(
+            resolved_job_id,
+            avatar_id=normalized_avatar_id,
+            audio_path=upload_path,
+            settings=settings,
+        )
+
+        worker = threading.Thread(
+            target=_run_render_job_async,
+            kwargs={
+                "avatar_id": normalized_avatar_id,
+                "audio_path": upload_path,
+                "job_id": resolved_job_id,
+                "fps": fps,
+                "batch_size": batch_size,
+                "model_version": model_version,
+                "chunk_duration": chunk_duration,
+                "settings": settings,
+            },
+            daemon=True,
+        )
+        worker.start()
+
+        status = None
+        for _ in range(20):
+            try:
+                status = load_job_status(resolved_job_id, settings=settings)
+                break
+            except FileNotFoundError:
+                time.sleep(0.1)
+        if status is None:
+            raise RuntimeError(f"Unable to initialize async render job {resolved_job_id}")
+
+        return _build_render_response_from_status(status)
+    except Exception as exc:
+        _raise_http_error(exc)
+    finally:
+        audio_file.file.close()
+
+
 @app.get("/jobs/{job_id}", response_model=JobStatusResponse)
 def get_job_status(job_id: str) -> JobStatusResponse:
     try:
         return _build_job_status_response(load_job_status(job_id))
     except Exception as exc:
         _raise_http_error(exc)
+
+
+
