@@ -227,6 +227,7 @@ export default function PlatformApp({ userName, userEmail, isAdmin }: Props) {
 
     const headers = new Headers(init?.headers || {});
     headers.set("Authorization", `Bearer ${tokenState.access_token}`);
+    headers.set("ngrok-skip-browser-warning", "1");
     return await fetch(`${tokenState.platform_api_base_url}${path}`, {
       ...init,
       headers,
@@ -240,6 +241,7 @@ export default function PlatformApp({ userName, userEmail, isAdmin }: Props) {
     }
     const headers = new Headers();
     headers.set("Authorization", `Bearer ${tokenState.access_token}`);
+    headers.set("ngrok-skip-browser-warning", "1");
     return await fetch(url, { method, headers, body: formData });
   }
 
@@ -1252,3 +1254,6 @@ function getErrorMessage(cause: unknown, fallback: string): string {
   }
   return fallback;
 }
+
+
+
