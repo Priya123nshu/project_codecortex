@@ -8,9 +8,9 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
 function platformBaseUrl(): string {
-  const baseUrl = process.env.NEXT_PUBLIC_PLATFORM_API_BASE_URL?.trim();
+  const baseUrl = process.env.PLATFORM_API_SERVER_BASE_URL?.trim() || process.env.NEXT_PUBLIC_PLATFORM_API_BASE_URL?.trim();
   if (!baseUrl) {
-    throw new Error("NEXT_PUBLIC_PLATFORM_API_BASE_URL is not configured.");
+    throw new Error("PLATFORM_API_SERVER_BASE_URL or NEXT_PUBLIC_PLATFORM_API_BASE_URL must be configured.");
   }
   return baseUrl.replace(/\/$/, "");
 }
