@@ -113,7 +113,7 @@ That means:
 - Vercel -> platform service must be allowed
 - platform service -> TTS service must be allowed
 - platform service -> avatar render service must be allowed
-- you do not need to expose the GPU avatar service publicly if the platform API can reach it privately
+- the avatar video output URL must be publicly reachable by the browser, either by exposing the avatar render service or by reverse proxying it through a public URL and using that as `AVATAR_RENDER_PUBLIC_BASE_URL`
 
 ## 6. Current production model
 
@@ -149,3 +149,4 @@ This implementation is intentionally:
 - [Vercel Environment Variables](https://vercel.com/docs/environment-variables)
 - [Vercel Project Settings](https://vercel.com/docs/project-configuration/project-settings)
 - [Deploying Git repositories on Vercel](https://vercel.com/docs/git)
+

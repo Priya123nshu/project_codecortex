@@ -12,7 +12,7 @@ This single-machine path is the easiest because:
 
 - `platform_service` can call `tts_service` on `127.0.0.1:8200`
 - `platform_service` can call `avatar_service` on `127.0.0.1:8000`
-- you only expose `8100` publicly for the web app
+- you expose `8100` publicly for the API, and `8000` must also be publicly reachable or reverse-proxied because chunk video playback uses that public URL
 - you avoid cross-instance networking during the demo
 
 ## 1. Create the EC2 machine
@@ -26,7 +26,8 @@ Recommended simple setup:
 - security group:
   - allow `22` from your IP
   - allow `8100` from `0.0.0.0/0` or your frontend IP range
-  - keep `8000` and `8200` private if all services run on the same machine
+  - allow `8000` from `0.0.0.0/0` or proxy it through Nginx, because the browser must fetch avatar video chunks from a public URL
+  - 8200 can stay private if platform_service reaches it locally
 
 ## 2. SSH in and install base packages
 
@@ -202,6 +203,10 @@ From your laptop:
 curl http://<AWS_PUBLIC_IP>:8100/health
 ```
 
+Important:
+
+- `AVATAR_RENDER_PUBLIC_BASE_URL` must be reachable from the browser. If you do not want to expose port `8000` directly, put Nginx in front of it and use that public URL instead.
+
 ## 11. Point Vercel to AWS
 
 Once `8100` is reachable, make sure this is set in Vercel:
@@ -236,3 +241,6 @@ After the demo, you can split this into:
 - systemd services for automatic restart
 
 But for the hackathon demo, one machine is the easiest and safest path.
+
+
+
