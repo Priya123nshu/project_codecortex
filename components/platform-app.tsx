@@ -588,7 +588,11 @@ export default function PlatformApp({ userName, userEmail, isAdmin }: Props) {
       formData.set("audio_file", new File([blob], `turn-${Date.now()}.webm`, { type: blob.type || "audio/webm" }));
       formData.set("transcript_hint", transcript);
 
-      const response = await authorizedFetch(`/sessions/${activeSession.session_id}/turns`, { method: "POST", body: formData });
+      const response = await fetch(`/api/platform/sessions/${activeSession.session_id}/turns`, {
+        method: "POST",
+        body: formData,
+        cache: "no-store",
+      });
       if (!response.ok || !response.body) {
         const payload = await parseJsonResponse<{ detail?: string }>(response);
         throw new Error("detail" in payload && payload.detail ? payload.detail : "Unable to submit the recorded turn.");
@@ -1249,8 +1253,21 @@ function formatFileSize(size: number): string {
 }
 
 function getErrorMessage(cause: unknown, fallback: string): string {
+  if (typeof cause === "string" && cause.trim()) {
+    return cause;
+  }
   if (cause instanceof Error && cause.message) {
     return cause.message;
+  }
+  if (cause && typeof cause === "object") {
+    const detail = "detail" in cause && typeof cause.detail === "string" ? cause.detail : "";
+    const message = "message" in cause && typeof cause.message === "string" ? cause.message : "";
+    if (detail) {
+      return detail;
+    }
+    if (message) {
+      return message;
+    }
   }
   return fallback;
 }
