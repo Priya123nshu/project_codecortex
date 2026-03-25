@@ -1,4 +1,4 @@
-﻿export type InputLanguage = "en" | "hi";
+export type InputLanguage = "en" | "hi";
 export type OutputLanguage = "en" | "hi" | "pa" | "ta";
 
 export type PlatformTokenResponse = {
@@ -103,7 +103,7 @@ export type StreamEvent =
       payload: {
         session_id: string;
         turn_id: string;
-        provider: "edge-tts" | "friend-local";
+        provider: "edge-tts" | "friend-local" | "indic-parler";
         language: OutputLanguage;
         audio_object_key: string;
         cache_hit: boolean;
@@ -138,3 +138,4 @@ export async function parseJsonResponse<T>(response: Response): Promise<T | { de
   const detail = await response.text();
   return { detail };
 }
+

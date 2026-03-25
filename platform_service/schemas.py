@@ -19,7 +19,7 @@ RoleValue = Literal["admin", "user"]
 InputLanguageValue = Literal["en", "hi"]
 OutputLanguageValue = Literal["en", "hi", "pa", "ta"]
 AvatarLanguageValue = Literal["en", "hi", "pa", "ta", "multilingual"]
-TtsProviderValue = Literal["edge-tts", "friend-local"]
+TtsProviderValue = Literal["edge-tts", "friend-local", "indic-parler"]
 
 
 class NamespaceSafeModel(BaseModel):
@@ -226,4 +226,5 @@ def model_to_dict(model: BaseModel) -> Dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump(mode="json")
     return model.dict()
+
 

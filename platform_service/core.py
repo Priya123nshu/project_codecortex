@@ -54,11 +54,12 @@ OUTPUT_LANGUAGE_LABELS: dict[str, str] = {
     "ta": "Tamil",
 }
 LANGUAGE_PROVIDER_MAP: dict[str, str] = {
-    "en": "edge-tts",
-    "hi": "edge-tts",
+    "en": "indic-parler",
+    "hi": "indic-parler",
     "pa": "friend-local",
-    "ta": "friend-local",
+    "ta": "indic-parler",
 }
+INDIC_PARLER_CACHE_VERSION = "indic-parler-v1"
 
 
 class ConfigurationError(RuntimeError):
@@ -1193,10 +1194,24 @@ def run_avatar_preprocess_job(avatar_id: str, settings: Settings | None = None) 
         update_avatar(avatar_id, status="failed", last_error=str(exc), settings=active_settings)
 
 
-def _tts_cache_object_key(provider: str, language: str, text: str) -> str:
+def _tts_cache_key_version(provider: str) -> str | None:
+    if provider == "indic-parler":
+        return INDIC_PARLER_CACHE_VERSION
+    return None
+
+
+def _tts_cache_object_key(provider: str, language: str, text: str, cache_key_version: str | None = None) -> str:
     normalized_text = collapse_whitespace(text)
     digest = hashlib.sha256(
-        json.dumps({"provider": provider, "language": language, "text": normalized_text}, ensure_ascii=False).encode("utf-8")
+        json.dumps(
+            {
+                "provider": provider,
+                "language": language,
+                "text": normalized_text,
+                "cache_key_version": cache_key_version,
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
     ).hexdigest()
     return f"tts-cache/{provider}/{language}/{digest}.wav"
 
@@ -1279,7 +1294,13 @@ def start_turn_stream(
         yield sse_message("assistant_text_ready", model_to_dict(text_event))
 
         provider = tts_client.provider_for_language(session.output_language)
-        assistant_audio_object_key = _tts_cache_object_key(provider, session.output_language, assistant_text)
+        cache_key_version = _tts_cache_key_version(provider)
+        assistant_audio_object_key = _tts_cache_object_key(
+            provider,
+            session.output_language,
+            assistant_text,
+            cache_key_version=cache_key_version,
+        )
         assistant_audio_path = store.path_for_key(assistant_audio_object_key)
         cache_hit = assistant_audio_path.exists()
 
@@ -1290,7 +1311,13 @@ def start_turn_stream(
                 request_id=turn.turn_id,
             )
             provider = str(synth_payload.get("provider") or provider)
-            assistant_audio_object_key = _tts_cache_object_key(provider, session.output_language, assistant_text)
+            cache_key_version = str(synth_payload.get("cache_key_version") or _tts_cache_key_version(provider) or "").strip() or None
+            assistant_audio_object_key = _tts_cache_object_key(
+                provider,
+                session.output_language,
+                assistant_text,
+                cache_key_version=cache_key_version,
+            )
             assistant_audio_path = store.path_for_key(assistant_audio_object_key)
             if not assistant_audio_path.exists():
                 audio_bytes_from_tts, _mime_type = tts_client.resolve_audio_bytes(synth_payload)
@@ -1379,6 +1406,7 @@ def start_turn_stream(
         )
         append_turn_event(turn.turn_id, "turn_failed", model_to_dict(failure_event), settings=active_settings)
         yield sse_message("turn_failed", model_to_dict(failure_event))
+
 
 
 

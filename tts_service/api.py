@@ -1,7 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -10,32 +11,38 @@ import uuid
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from tts_service.indic_parler import (
+    DESCRIPTION_TEMPLATE_VERSION,
+    DEFAULT_DESCRIPTION_TEMPLATES,
+    IndicParlerError,
+    IndicParlerRuntime,
+    IndicParlerSettings,
+)
 
-ProviderValue = Literal["edge-tts", "friend-local"]
+
+ProviderValue = Literal["edge-tts", "friend-local", "indic-parler"]
 LanguageValue = Literal["en", "hi", "pa", "ta"]
+ALL_PROVIDERS: tuple[ProviderValue, ...] = ("edge-tts", "friend-local", "indic-parler")
 
-SUPPORTED_LANGUAGES = {
+LANGUAGE_METADATA: dict[LanguageValue, dict[str, str]] = {
     "en": {
         "label": "English",
-        "provider": "edge-tts",
         "voice_env": "TTS_EDGE_EN_VOICE",
         "voice_default": "en-US-JennyNeural",
     },
     "hi": {
         "label": "Hindi",
-        "provider": "edge-tts",
         "voice_env": "TTS_EDGE_HI_VOICE",
         "voice_default": "hi-IN-SwaraNeural",
     },
     "pa": {
         "label": "Punjabi",
-        "provider": "friend-local",
         "zip_name": "tts_with_spk_adapt_punjabi_Version_1.zip",
         "checkpoint": "punjabi.pt",
         "folder": "Punjabi",
@@ -43,12 +50,18 @@ SUPPORTED_LANGUAGES = {
     },
     "ta": {
         "label": "Tamil",
-        "provider": "friend-local",
         "zip_name": "tts_with_spk_adapt_tamil_Version_1.zip",
         "checkpoint": "tamil.pt",
         "folder": "Tamil",
         "lang_arg": "tamil",
     },
+}
+
+DEFAULT_PROVIDER_CHAINS: dict[LanguageValue, tuple[ProviderValue, ...]] = {
+    "en": ("indic-parler", "edge-tts"),
+    "hi": ("indic-parler", "edge-tts"),
+    "pa": ("friend-local", "indic-parler"),
+    "ta": ("indic-parler", "friend-local"),
 }
 
 
@@ -68,9 +81,16 @@ class Settings:
     tts_reference_audio: str | None
     tts_gender: str
     ffmpeg_bin: str
+    huggingface_hub_token: str | None
+    indic_parler_model_id: str
+    indic_parler_device: str
+    indic_parler_enabled_languages: tuple[str, ...]
+    indic_parler_cache_root: Path
+    indic_parler_description_templates: dict[str, str]
+    provider_chains: dict[LanguageValue, tuple[ProviderValue, ...]]
 
     def ensure_dirs(self) -> None:
-        for path in (self.generated_root, self.models_root, self.runtime_root):
+        for path in (self.generated_root, self.models_root, self.runtime_root, self.indic_parler_cache_root):
             path.mkdir(parents=True, exist_ok=True)
 
 
@@ -89,12 +109,14 @@ class SynthesizeResponse(BaseModel):
     mime_type: str = "audio/wav"
     cache_hit: bool = False
     warnings: list[str] = Field(default_factory=list)
+    cache_key_version: str | None = None
 
 
 class LanguageDescriptor(BaseModel):
     id: LanguageValue
     label: str
     provider: ProviderValue
+    provider_chain: list[ProviderValue] = Field(default_factory=list)
 
 
 class LanguagesResponse(BaseModel):
@@ -105,9 +127,99 @@ class HealthResponse(BaseModel):
     status: Literal["ok"]
     service: str
     languages: list[str]
+    provider_chains: dict[str, list[ProviderValue]] = Field(default_factory=dict)
+    fallback_only_languages: list[str] = Field(default_factory=list)
+    indic_parler: dict[str, Any] = Field(default_factory=dict)
+
+
+class WarmupResponse(BaseModel):
+    status: Literal["ok"]
+    provider: ProviderValue
+    ready: bool
+    detail: str | None = None
+    fallback_only_languages: list[str] = Field(default_factory=list)
+    indic_parler: dict[str, Any] = Field(default_factory=dict)
 
 
 _SETTINGS: Settings | None = None
+_INDIC_PARLER_RUNTIME: IndicParlerRuntime | None = None
+
+
+def _strip_quotes(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
+
+
+def _load_env_file() -> dict[str, str]:
+    env: dict[str, str] = {}
+    service_root = Path(__file__).resolve().parent
+    candidates = [service_root / ".env", service_root.parent / ".env", Path.cwd() / ".env"]
+    env_path = next((path for path in candidates if path.exists()), None)
+    if not env_path:
+        return env
+
+    for raw_line in env_path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        env[key.strip()] = _strip_quotes(value)
+    return env
+
+
+def _env(key: str, env_map: dict[str, str], default: str | None = None) -> str:
+    value = os.getenv(key)
+    if value:
+        return value
+    if key in env_map and env_map[key]:
+        return env_map[key]
+    if default is None:
+        raise TtsServiceError(f"Missing required configuration value: {key}")
+    return default
+
+
+def _csv(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return ()
+    return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _json_dict(value: str | None) -> dict[str, Any]:
+    if not value:
+        return {}
+    try:
+        payload = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise TtsServiceError(f"Invalid JSON configuration: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise TtsServiceError("Expected a JSON object for TTS configuration.")
+    return payload
+
+
+def _parse_provider_chains(value: str | None) -> dict[LanguageValue, tuple[ProviderValue, ...]]:
+    chains: dict[LanguageValue, tuple[ProviderValue, ...]] = dict(DEFAULT_PROVIDER_CHAINS)
+    raw_overrides = _json_dict(value)
+    if not raw_overrides:
+        return chains
+
+    for language, raw_chain in raw_overrides.items():
+        if language not in LANGUAGE_METADATA or not isinstance(raw_chain, list):
+            continue
+        normalized = [str(item).strip() for item in raw_chain if str(item).strip() in ALL_PROVIDERS]
+        if normalized:
+            chains[cast(LanguageValue, language)] = tuple(cast(ProviderValue, item) for item in normalized)
+    return chains
+
+
+def _parse_description_templates(value: str | None) -> dict[str, str]:
+    templates = dict(DEFAULT_DESCRIPTION_TEMPLATES)
+    overrides = _json_dict(value)
+    for language, template in overrides.items():
+        if language in LANGUAGE_METADATA and isinstance(template, str) and template.strip():
+            templates[language] = collapse_whitespace(template)
+    return templates
 
 
 def get_settings() -> Settings:
@@ -115,30 +227,98 @@ def get_settings() -> Settings:
     if _SETTINGS is not None:
         return _SETTINGS
 
+    env_map = _load_env_file()
     service_root = Path(__file__).resolve().parent
+    models_root = Path(_env("TTS_MODELS_ROOT", env_map, default=str(service_root / "models")))
     settings = Settings(
         service_root=service_root,
-        public_base_url=(os.getenv("TTS_PUBLIC_BASE_URL") or "http://127.0.0.1:8200").rstrip("/"),
-        generated_root=Path(os.getenv("TTS_GENERATED_ROOT") or service_root / "storage" / "generated"),
-        models_root=Path(os.getenv("TTS_MODELS_ROOT") or service_root / "models"),
-        runtime_root=Path(os.getenv("TTS_RUNTIME_ROOT") or service_root / "runtime"),
-        downloads_root=Path(os.getenv("TTS_MODEL_DOWNLOADS_DIR") or Path.home() / "Downloads"),
-        tts_python_bin=os.getenv("TTS_PYTHON_BIN"),
-        tts_reference_audio=os.getenv("TTS_REFERENCE_AUDIO"),
-        tts_gender=os.getenv("TTS_GENDER") or "female",
-        ffmpeg_bin=os.getenv("TTS_FFMPEG_BIN") or "ffmpeg",
+        public_base_url=_env("TTS_PUBLIC_BASE_URL", env_map, default="http://127.0.0.1:8200").rstrip("/"),
+        generated_root=Path(_env("TTS_GENERATED_ROOT", env_map, default=str(service_root / "storage" / "generated"))),
+        models_root=models_root,
+        runtime_root=Path(_env("TTS_RUNTIME_ROOT", env_map, default=str(service_root / "runtime"))),
+        downloads_root=Path(_env("TTS_MODEL_DOWNLOADS_DIR", env_map, default=str(Path.home() / "Downloads"))),
+        tts_python_bin=os.getenv("TTS_PYTHON_BIN") or env_map.get("TTS_PYTHON_BIN"),
+        tts_reference_audio=os.getenv("TTS_REFERENCE_AUDIO") or env_map.get("TTS_REFERENCE_AUDIO"),
+        tts_gender=_env("TTS_GENDER", env_map, default="female"),
+        ffmpeg_bin=_env("TTS_FFMPEG_BIN", env_map, default="ffmpeg"),
+        huggingface_hub_token=os.getenv("HUGGINGFACE_HUB_TOKEN") or env_map.get("HUGGINGFACE_HUB_TOKEN"),
+        indic_parler_model_id=_env("INDIC_PARLER_MODEL_ID", env_map, default="ai4bharat/indic-parler-tts"),
+        indic_parler_device=_env("INDIC_PARLER_DEVICE", env_map, default="cuda"),
+        indic_parler_enabled_languages=_csv(
+            os.getenv("TTS_INDIC_PARLER_ENABLED_LANGUAGES")
+            or env_map.get("TTS_INDIC_PARLER_ENABLED_LANGUAGES")
+            or "en,hi,pa,ta"
+        ),
+        indic_parler_cache_root=Path(
+            _env("TTS_INDIC_PARLER_CACHE_ROOT", env_map, default=str(models_root / "huggingface"))
+        ),
+        indic_parler_description_templates=_parse_description_templates(
+            os.getenv("TTS_INDIC_PARLER_DESCRIPTIONS_JSON") or env_map.get("TTS_INDIC_PARLER_DESCRIPTIONS_JSON")
+        ),
+        provider_chains=_parse_provider_chains(
+            os.getenv("TTS_PROVIDER_CHAINS_JSON") or env_map.get("TTS_PROVIDER_CHAINS_JSON")
+        ),
     )
     settings.ensure_dirs()
     _SETTINGS = settings
     return settings
 
 
+def get_indic_parler_runtime() -> IndicParlerRuntime:
+    global _INDIC_PARLER_RUNTIME
+    if _INDIC_PARLER_RUNTIME is None:
+        settings = get_settings()
+        _INDIC_PARLER_RUNTIME = IndicParlerRuntime(
+            IndicParlerSettings(
+                model_id=settings.indic_parler_model_id,
+                device=settings.indic_parler_device,
+                token=settings.huggingface_hub_token,
+                enabled_languages=settings.indic_parler_enabled_languages,
+                cache_dir=settings.indic_parler_cache_root,
+                description_templates=settings.indic_parler_description_templates,
+            )
+        )
+    return _INDIC_PARLER_RUNTIME
+
+
 def collapse_whitespace(text: str) -> str:
     return " ".join((text or "").split())
 
 
-def cache_dir_for(provider: str, language: str, text: str) -> Path:
-    digest = hashlib.sha256(f"{provider}|{language}|{collapse_whitespace(text)}".encode("utf-8")).hexdigest()
+def provider_chain_for(language: LanguageValue) -> tuple[ProviderValue, ...]:
+    chain = get_settings().provider_chains.get(language)
+    if not chain:
+        raise TtsServiceError(f"Unsupported language: {language}")
+    return chain
+
+
+def get_primary_provider(language: LanguageValue) -> ProviderValue:
+    return cast(ProviderValue, provider_chain_for(language)[0])
+
+
+def provider_chains_payload() -> dict[str, list[ProviderValue]]:
+    return {language: list(chain) for language, chain in get_settings().provider_chains.items()}
+
+
+def fallback_only_languages() -> list[str]:
+    return [language for language, chain in get_settings().provider_chains.items() if "indic-parler" in chain and chain[0] != "indic-parler"]
+
+
+def cache_key_version_for(provider: ProviderValue) -> str | None:
+    if provider == "indic-parler":
+        return DESCRIPTION_TEMPLATE_VERSION
+    return None
+
+
+def internal_cache_salt_for(provider: ProviderValue, language: LanguageValue) -> str | None:
+    if provider == "indic-parler":
+        return get_indic_parler_runtime().cache_signature(language)
+    return None
+
+
+def cache_dir_for(provider: ProviderValue, language: LanguageValue, text: str, *, cache_salt: str | None = None) -> Path:
+    normalized = collapse_whitespace(text)
+    digest = hashlib.sha256(f"{provider}|{language}|{cache_salt or ''}|{normalized}".encode("utf-8")).hexdigest()
     settings = get_settings()
     return settings.generated_root / provider / language / digest
 
@@ -149,22 +329,15 @@ def output_url_for(file_path: Path) -> str:
     return f"{settings.public_base_url}/generated/{'/'.join(relative.parts)}"
 
 
-def get_provider(language: str) -> ProviderValue:
-    payload = SUPPORTED_LANGUAGES.get(language)
-    if not payload:
-        raise TtsServiceError(f"Unsupported language: {language}")
-    return payload["provider"]
-
-
 def run_command(command: list[str], *, cwd: str | None = None, env: dict[str, str] | None = None) -> None:
     result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise TtsServiceError(result.stderr.strip() or result.stdout.strip() or "Command execution failed.")
 
 
-def ensure_friend_language_assets(language: str) -> dict[str, str]:
+def ensure_friend_language_assets(language: LanguageValue) -> dict[str, str]:
     settings = get_settings()
-    payload = SUPPORTED_LANGUAGES[language]
+    payload = LANGUAGE_METADATA[language]
     extracted_dir = settings.models_root / language
     source_folder = extracted_dir / payload["folder"]
     zip_path = settings.downloads_root / payload["zip_name"]
@@ -254,21 +427,23 @@ async def synthesize_edge_tts(text: str, output_path: Path, voice: str) -> None:
     temp_mp3 = output_path.with_suffix(".edge.mp3")
     communicate = edge_tts.Communicate(text, voice)
     await communicate.save(str(temp_mp3))
-    run_command([
-        get_settings().ffmpeg_bin,
-        "-y",
-        "-i",
-        str(temp_mp3),
-        "-ar",
-        "16000",
-        "-ac",
-        "1",
-        str(output_path),
-    ])
+    run_command(
+        [
+            get_settings().ffmpeg_bin,
+            "-y",
+            "-i",
+            str(temp_mp3),
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            str(output_path),
+        ]
+    )
     temp_mp3.unlink(missing_ok=True)
 
 
-def synthesize_friend_local(text: str, output_path: Path, language: str, request_id: str) -> None:
+def synthesize_friend_local(text: str, output_path: Path, language: LanguageValue, request_id: str) -> None:
     settings = get_settings()
     if not settings.tts_python_bin:
         raise TtsServiceError("TTS_PYTHON_BIN is not configured for the friend-local runtime.")
@@ -307,44 +482,95 @@ def synthesize_friend_local(text: str, output_path: Path, language: str, request
         raise TtsServiceError(f"Expected synthesized WAV was not found at {output_path}")
 
 
+def synthesize_indic_parler(text: str, output_path: Path, language: LanguageValue) -> None:
+    try:
+        get_indic_parler_runtime().synthesize_to_path(text=text, language=language, output_path=output_path)
+    except IndicParlerError as exc:
+        raise TtsServiceError(str(exc)) from exc
+
+
+def synthesize_with_provider(provider: ProviderValue, text: str, output_path: Path, language: LanguageValue, request_id: str) -> None:
+    if provider == "edge-tts":
+        voice = os.getenv(LANGUAGE_METADATA[language].get("voice_env", ""), LANGUAGE_METADATA[language].get("voice_default", ""))
+        asyncio.run(synthesize_edge_tts(text, output_path, voice))
+        return
+    if provider == "friend-local":
+        synthesize_friend_local(text, output_path, language, request_id)
+        return
+    synthesize_indic_parler(text, output_path, language)
+
+
+def build_synthesize_response(
+    *,
+    request_id: str,
+    language: LanguageValue,
+    provider: ProviderValue,
+    output_path: Path,
+    cache_hit: bool,
+    warnings: list[str],
+) -> SynthesizeResponse:
+    return SynthesizeResponse(
+        request_id=request_id,
+        language=language,
+        provider=provider,
+        audio_url=output_url_for(output_path),
+        audio_path=str(output_path),
+        cache_hit=cache_hit,
+        warnings=warnings,
+        cache_key_version=cache_key_version_for(provider),
+    )
+
+
 def synthesize_audio(payload: SynthesizeRequest) -> SynthesizeResponse:
     text = collapse_whitespace(payload.text)
     if not text:
         raise TtsServiceError("Text is required.")
 
-    provider = get_provider(payload.language)
+    chain = provider_chain_for(payload.language)
+    primary_provider = chain[0]
     request_id = payload.request_id or f"tts_{uuid.uuid4().hex}"
-    output_dir = cache_dir_for(provider, payload.language, text)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "output.wav"
-    warnings: list[str] = []
+    errors: list[str] = []
 
-    if output_path.exists():
-        return SynthesizeResponse(
-            request_id=request_id,
-            language=payload.language,
-            provider=provider,
-            audio_url=output_url_for(output_path),
-            audio_path=str(output_path),
-            cache_hit=True,
-            warnings=warnings,
+    for provider in chain:
+        output_dir = cache_dir_for(
+            provider,
+            payload.language,
+            text,
+            cache_salt=internal_cache_salt_for(provider, payload.language),
         )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / "output.wav"
+        warnings: list[str] = []
 
-    if provider == "edge-tts":
-        voice = os.getenv(SUPPORTED_LANGUAGES[payload.language]["voice_env"], SUPPORTED_LANGUAGES[payload.language]["voice_default"])
-        asyncio.run(synthesize_edge_tts(text, output_path, voice))
-    else:
-        synthesize_friend_local(text, output_path, payload.language, request_id)
+        if provider != primary_provider:
+            if errors:
+                warnings.extend(errors)
+            warnings.append(f"Used fallback provider {provider} instead of primary provider {primary_provider}.")
 
-    return SynthesizeResponse(
-        request_id=request_id,
-        language=payload.language,
-        provider=provider,
-        audio_url=output_url_for(output_path),
-        audio_path=str(output_path),
-        cache_hit=False,
-        warnings=warnings,
-    )
+        if output_path.exists():
+            return build_synthesize_response(
+                request_id=request_id,
+                language=payload.language,
+                provider=provider,
+                output_path=output_path,
+                cache_hit=True,
+                warnings=warnings,
+            )
+
+        try:
+            synthesize_with_provider(provider, text, output_path, payload.language, request_id)
+            return build_synthesize_response(
+                request_id=request_id,
+                language=payload.language,
+                provider=provider,
+                output_path=output_path,
+                cache_hit=False,
+                warnings=warnings,
+            )
+        except TtsServiceError as exc:
+            errors.append(f"{provider} failed: {exc}")
+
+    raise TtsServiceError("; ".join(errors) or "No TTS provider is available for this request.")
 
 
 settings = get_settings()
@@ -353,7 +579,7 @@ settings.ensure_dirs()
 app = FastAPI(
     title="TTS Service",
     description="Sidecar multilingual text-to-speech service for the real-time avatar demo.",
-    version="0.1.0",
+    version="0.2.0",
 )
 app.mount("/generated", StaticFiles(directory=str(settings.generated_root)), name="generated")
 
@@ -365,21 +591,57 @@ def index() -> dict[str, object]:
         "status": "ok",
         "health": "/health",
         "languages": "/languages",
+        "warmup": "/warmup",
         "synthesize": "/synthesize",
     }
 
 
 @app.get("/health", response_model=HealthResponse)
 def health() -> HealthResponse:
-    return HealthResponse(status="ok", service="tts-service", languages=list(SUPPORTED_LANGUAGES.keys()))
+    return HealthResponse(
+        status="ok",
+        service="tts-service",
+        languages=list(LANGUAGE_METADATA.keys()),
+        provider_chains=provider_chains_payload(),
+        fallback_only_languages=fallback_only_languages(),
+        indic_parler=get_indic_parler_runtime().health_snapshot(),
+    )
+
+
+@app.post("/warmup", response_model=WarmupResponse)
+def warmup() -> WarmupResponse:
+    runtime = get_indic_parler_runtime()
+    try:
+        snapshot = runtime.warmup()
+        return WarmupResponse(
+            status="ok",
+            provider="indic-parler",
+            ready=True,
+            fallback_only_languages=fallback_only_languages(),
+            indic_parler=snapshot,
+        )
+    except IndicParlerError as exc:
+        return WarmupResponse(
+            status="ok",
+            provider="indic-parler",
+            ready=False,
+            detail=str(exc),
+            fallback_only_languages=fallback_only_languages(),
+            indic_parler=runtime.health_snapshot(),
+        )
 
 
 @app.get("/languages", response_model=LanguagesResponse)
 def languages() -> LanguagesResponse:
     return LanguagesResponse(
         languages=[
-            LanguageDescriptor(id=language_id, label=payload["label"], provider=payload["provider"])
-            for language_id, payload in SUPPORTED_LANGUAGES.items()
+            LanguageDescriptor(
+                id=language_id,
+                label=payload["label"],
+                provider=get_primary_provider(language_id),
+                provider_chain=list(provider_chain_for(language_id)),
+            )
+            for language_id, payload in LANGUAGE_METADATA.items()
         ]
     )
 
