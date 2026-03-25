@@ -572,9 +572,6 @@ export default function PlatformApp({ userName, userEmail, isAdmin }: Props) {
     }
 
     try {
-      if (!tokenState) {
-        throw new Error("Platform API access token is missing.");
-      }
       setIsSubmittingTurn(true);
       setPendingTurnBlob(null);
       setConversationError(null);
@@ -591,13 +588,9 @@ export default function PlatformApp({ userName, userEmail, isAdmin }: Props) {
       formData.set("audio_file", new File([blob], `turn-${Date.now()}.webm`, { type: blob.type || "audio/webm" }));
       formData.set("transcript_hint", transcript);
 
-      const response = await fetch(`/api/platform/sessions/${activeSession.session_id}/turns`, {
+      const response = await authorizedFetch(`/sessions/${activeSession.session_id}/turns`, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${tokenState.access_token}`,
-        },
         body: formData,
-        cache: "no-store",
       });
       if (!response.ok || !response.body) {
         const payload = await parseJsonResponse<{ detail?: string }>(response);
