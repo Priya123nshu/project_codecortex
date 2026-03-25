@@ -996,7 +996,15 @@ class TtsServiceClient:
             json={"text": text, "language": language, "request_id": request_id},
             timeout=self.settings.tts_request_timeout_seconds,
         )
-        response.raise_for_status()
+        if not response.ok:
+            detail = ""
+            try:
+                error_payload = response.json()
+                if isinstance(error_payload, dict):
+                    detail = str(error_payload.get("detail") or error_payload.get("message") or "").strip()
+            except ValueError:
+                detail = response.text.strip()
+            raise RuntimeError(detail or f"TTS service returned {response.status_code}.")
         payload = response.json()
         if not isinstance(payload, dict):
             raise RuntimeError("TTS service returned an unexpected response payload.")
@@ -1371,6 +1379,7 @@ def start_turn_stream(
         )
         append_turn_event(turn.turn_id, "turn_failed", model_to_dict(failure_event), settings=active_settings)
         yield sse_message("turn_failed", model_to_dict(failure_event))
+
 
 
 
