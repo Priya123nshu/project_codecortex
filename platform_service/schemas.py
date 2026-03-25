@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
@@ -127,6 +127,7 @@ class TurnRecord(BaseModel):
     user_transcript: Optional[str] = None
     retrieval_query_text: Optional[str] = None
     assistant_text: Optional[str] = None
+    assistant_audio_object_key: Optional[str] = None
     status: TurnStatus
     render_job_id: Optional[str] = None
     created_at: datetime
@@ -225,3 +226,4 @@ def model_to_dict(model: BaseModel) -> Dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump(mode="json")
     return model.dict()
+

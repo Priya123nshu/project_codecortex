@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import json
@@ -425,6 +425,7 @@ def _row_to_turn(row: sqlite3.Row) -> TurnRecord:
         user_transcript=row["user_transcript"],
         retrieval_query_text=_row_get(row, "retrieval_query_text"),
         assistant_text=row["assistant_text"],
+        assistant_audio_object_key=_row_get(row, "assistant_audio_object_key"),
         status=row["status"],
         render_job_id=row["render_job_id"],
         created_at=datetime.fromisoformat(row["created_at"]),
@@ -1370,5 +1371,6 @@ def start_turn_stream(
         )
         append_turn_event(turn.turn_id, "turn_failed", model_to_dict(failure_event), settings=active_settings)
         yield sse_message("turn_failed", model_to_dict(failure_event))
+
 
 
