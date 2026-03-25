@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { signOut } from "next-auth/react";
@@ -682,10 +682,12 @@ export default function PlatformApp({ userName, userEmail, isAdmin }: Props) {
       case "assistant_text_ready":
         setCurrentAnswer(typedEvent.payload.text);
         break;
-      case "avatar_chunk_ready":
-        setChunkUrls((current) => (current.includes(typedEvent.payload.video_url) ? current : [...current, typedEvent.payload.video_url]));
-        setSelectedChunkUrl((current) => current ?? typedEvent.payload.video_url);
+      case "avatar_chunk_ready": {
+        const proxiedVideoUrl = proxyChunkUrl(typedEvent.payload.video_url);
+        setChunkUrls((current) => (current.includes(proxiedVideoUrl) ? current : [...current, proxiedVideoUrl]));
+        setSelectedChunkUrl((current) => current ?? proxiedVideoUrl);
         break;
+      }
       case "turn_completed":
         setRecordingHint(null);
         void refreshSessionHistory(sessionId);
@@ -1270,6 +1272,12 @@ function getErrorMessage(cause: unknown, fallback: string): string {
   }
   return fallback;
 }
+
+function proxyChunkUrl(videoUrl: string): string {
+  return `/api/platform/chunk?url=${encodeURIComponent(videoUrl)}`;
+}
+
+
 
 
 
